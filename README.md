@@ -1,8 +1,11 @@
 # `extract_activity.py`
+_Sept 2026_
 
-Reads an Instruqt participant CSV export and produces a two-part Markdown report.
+Reads the Download CSV file exported from the [Instruqt Activity Dashboard](https://docs.instruqt.com/reporting/activity-report) to produces a two-part Markdown report.
 
 > All timestamps in the source CSV are UTC. The report converts them to the local machine timezone automatically and labels them accordingly.
+
+> NOTE: this code has been done by Claude AI.
 
 ### Input
 
