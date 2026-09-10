@@ -21,6 +21,13 @@ A CSV file exported from the Instruqt **Activity Report** page. Each row represe
 **Part 2 — Per-user track detail**
 - One section per user listing unique tracks, completion status, and challenge progress
 
+**Report title**
+The title always includes the file modification timestamp as the reference time:
+```
+# Activity Report — 2026-09-08T09:55:36 CEST
+# Activity Report — 2026-09-08T09:55:36 CEST — 2026-09-01   (with -d filter)
+```
+
 ### Usage
 
 ```bash
@@ -43,10 +50,10 @@ Example: [sample](./sample.md)
 | `--summary-only` | Output Part 1 only — skip per-user track detail |
 | `--no-email` | Omit the Email column from all tables |
 | `--inactive` | Add an **Inactive For** column — time elapsed since each user's last activity, relative to the input file's modification timestamp |
-| `--progress-indicator` | Show the **Tracks — Indicators of Progression** section with average completion stats and a table of outliers (🚀 ahead / 🏎️💨 behind, ±1 track of the average) |
+| `--progress-indicator` | Show the **Tracks — Indicators of Progression** section with average completion stats and a table of outliers (🚀 ahead / 🏎️💨 behind, ±1 track of the average). Table columns: Status, Name, Completed, Last Completed Track, Inactive For (if `--inactive`) |
 | `--no-tracks-summary` | Hide the Track Summary table |
 | `--no-summary-indicators` | Hide the Status icon column (🚀 / ✅ / 🏎️💨) in the Summary table |
-| `--anonymize` | Replace real names and emails with `User1`, `user1@anon.local`, etc. |
+| `--anonymize` | Replace real names and emails with `User1`, `user1@anon.local`, etc. Also omits the filename from the report header. |
 
 ### Status icons
 
@@ -55,5 +62,11 @@ Example: [sample](./sample.md)
 | 🚀 | Ahead — completed more than average + 1 track |
 | ✅ | On track — within ±1 track of the average |
 | 🏎️💨 | Behind — completed fewer than average − 1 track |
+
+### Required CSV columns
+
+Standard Instruqt participant export columns used by the script:
+
+`user_email`, `user_display_name`, `track_slug`, `time_spent`, `track_completed_at`, `last_activity_at`, `completed_challenges`, `total_challenges`
 
 ---
