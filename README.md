@@ -31,6 +31,7 @@ python extract_activity.py input.csv --summary-only         # part 1 only
 python extract_activity.py input.csv --inactive --progress-indicator -o report.md
 python extract_activity.py input.csv --anonymize --no-email -o report.md
 ```
+Example: [sample](./sample.md)
 
 ### Options
 
