@@ -25,10 +25,14 @@ Options:
                              each user's last activity, relative to the input file's
                              modification timestamp (used as the reference time)
   --progress-indicator       Show the 'Tracks — Indicators of Progression' section:
-                             average completion stats + table of outliers
-                             (🚀 ahead / 🏎️💨 behind, outside ± 1 track of the average)
-                             Table columns: Status, Name, Completed,
+                             median completion stats, max completed, max started,
+                             on-track summary, and table of outliers
+                             (🚀 ahead / 🏎️💨 behind, outside ± 1 track of the median)
+                             Table columns: Status, Name, Completed/Started,
                              Last Completed Track, Inactive For (if --inactive)
+  --trimmed-mean             Use trimmed mean (drop bottom/top 10%) instead of median
+                             as the reference in the Indicators of Progression section.
+                             Also known as Gaussian approach.
   --no-tracks-summary        Hide the Track Summary table
   --no-summary-indicators    Hide the Status icon column (🚀 / ✅ / 🏎️💨) in the
                              per-user Summary table
@@ -36,7 +40,7 @@ Options:
                              Also omits the filename from the report header.
 
 Report title format:
-  # Activity Report — <file_modification_timestamp ISO8601> <TZ> [— <date_filter>]
+  # Activity Report — YYYY-MM-DD — HH:MM:SS <TZ> [— <date_filter>]
 
 Examples:
     python extract_activity.py participants.csv
@@ -48,6 +52,7 @@ Examples:
 
 import argparse
 import csv
+import statistics
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -117,9 +122,10 @@ def md_table(headers: list, rows: list) -> str:
 
 
 def progress_icon(completed: int, avg: float) -> str:
-    if completed > avg:
+    ref = round(avg)
+    if completed > ref + 1:
         return "🚀"
-    elif completed < avg:
+    elif completed < ref - 1:
         return "🏎️💨"
     else:
         return "✅"
@@ -187,8 +193,11 @@ def load(path: Path, date_filter: str = "") -> dict:
                     "completed_challenges": done,
                     "total_challenges": total,
                     "completed_at": completed_at,
+                    "last_activity_at": last_act,
                 }
             else:
+                if last_act > existing["last_activity_at"]:
+                    existing["last_activity_at"] = last_act
                 if completed:
                     existing["completed"] = True
                     existing["completed_challenges"] = done
@@ -215,25 +224,29 @@ def anonymize_users(users: dict) -> dict:
 
 
 def last_completed_track(user: dict) -> str:
-    best_slug, best_date = "", ""
-    for slug, t in user["tracks"].items():
-        if t["completed"] and t["completed_at"] > best_date:
-            best_slug = slug
-            best_date = t["completed_at"]
-    return best_slug or "None"
+    completed = [slug for slug, t in user["tracks"].items() if t["completed"]]
+    return max(completed) if completed else "None"
 
 
 def completed_count(user: dict) -> int:
     return sum(1 for t in user["tracks"].values() if t["completed"])
 
 
+def started_count(user: dict) -> int:
+    return len(user["tracks"])
+
+
 # ── report sections ──────────────────────────────────────────────────────────
 
 def section_progress_indicator(users: dict, tracks_avg: float,
-                                file_ts_utc: datetime = None) -> str:
+                                file_ts_utc: datetime = None,
+                                method_label: str = "Median") -> str:
     total = len(users)
     avg_rounded = round(tracks_avg)
     lo, hi = avg_rounded - 1, avg_rounded + 1
+
+    max_completed = max(completed_count(u) for u in users.values())
+    max_started   = max(started_count(u)   for u in users.values())
 
     def count_at(n):
         return sum(1 for u in users.values() if completed_count(u) == n)
@@ -242,20 +255,26 @@ def section_progress_indicator(users: dict, tracks_avg: float,
         c = count_at(n)
         return f"{c / total * 100:.0f}% ({c}/{total})", c
 
-    at_pct, at_c   = pct(avg_rounded)
-    lo_pct, _      = pct(lo)
-    hi_pct, _      = pct(hi)
+    at_pct, _  = pct(avg_rounded)
+    lo_pct, _  = pct(lo)
+    hi_pct, _  = pct(hi)
+
+    on_track_c = sum(1 for u in users.values() if lo <= completed_count(u) <= hi)
+    on_track_pct = f"{on_track_c / total * 100:.0f}%"
 
     lines = [
         "## Tracks — Indicators of Progression\n",
-        f"Average tracks completed: **{tracks_avg:.1f}** (rounded: {avg_rounded})\n",
-        f"- ✅ {hi_pct} participants have completed {hi} tracks.",
-        f"- ✅ {at_pct} participants have completed {avg_rounded} tracks.",
-        f"- ✅ {lo_pct} participants have completed {lo} tracks.\n",
+        f"{method_label} tracks completed: **{avg_rounded}**",
+        f"> Max tracks completed: **{max_completed}**",
+        f"> Max tracks started: **{max_started}**\n",
+        f"### ✅ **{on_track_pct}** ({on_track_c}/{total}) participants have completed {lo}-{hi} tracks\n",
+        f"> - ✅ {hi_pct} participants have completed {hi} tracks.",
+        f"> - ✅ {at_pct} participants have completed {avg_rounded} tracks.",
+        f"> - ✅ {lo_pct} participants have completed {lo} tracks.\n",
     ]
 
     # Table: only users OUTSIDE the tolerance zone [avg-1, avg+1]
-    headers = ["Status", "Name", "Completed", "Last Completed Track"]
+    headers = ["Status", "Name", "Completed/Started", "Last Completed Track"]
     if file_ts_utc:
         headers.append("Inactive For")
 
@@ -269,7 +288,7 @@ def section_progress_indicator(users: dict, tracks_avg: float,
         if lo <= count <= hi:
             continue  # within tolerance — skip
         icon = "🚀" if count > hi else "🏎️💨"
-        row = [icon, u["name"], str(count), last_completed_track(u)]
+        row = [icon, u["name"], f"{count}/*{started_count(u)}*", last_completed_track(u)]
         if file_ts_utc:
             row.append(fmt_inactive(u["last_activity_at"], file_ts_utc))
         rows.append(row)
@@ -277,7 +296,7 @@ def section_progress_indicator(users: dict, tracks_avg: float,
     if rows:
         lines.append(md_table(headers, rows))
     else:
-        lines.append("_All participants are within one track of the average._")
+        lines.append("_All participants are within one track of the reference._")
 
     return "\n".join(lines) + "\n"
 
@@ -304,15 +323,16 @@ def section_track_summary(users: dict) -> str:
 def section_summary(users: dict, show_email: bool = True,
                     file_ts_utc: datetime = None,
                     tracks_avg: float = None,
-                    show_indicators: bool = False) -> str:
+                    show_indicators: bool = False,
+                    ts_label: str = "") -> str:
     headers = ["#", "Name"]
     if show_email:
         headers.append("Email")
-    headers += ["Completed Tracks", "Total Time Spent", "Last Seen", "Last Completed Track"]
-    if file_ts_utc:
-        headers.append("Inactive For")
     if show_indicators and tracks_avg is not None:
         headers.append("Status")
+    headers += ["# Completed/Started", "Last Completed", "Total Time Spent", "Last Seen"]
+    if file_ts_utc:
+        headers.append("Inactive For")
 
     rows = []
     for i, u in enumerate(sorted(users.values(), key=lambda x: x["name"].lower()), start=1):
@@ -320,19 +340,20 @@ def section_summary(users: dict, show_email: bool = True,
         row = [str(i), u["name"]]
         if show_email:
             row.append(u["email"])
+        if show_indicators and tracks_avg is not None:
+            row.append(progress_icon(count, round(tracks_avg)))
         row += [
-            str(count),
+            f"{count}/*{started_count(u)}*",
+            last_completed_track(u),
             fmt_duration(u["total_time"]),
             utc_to_local(u["last_activity_at"]),
-            last_completed_track(u),
         ]
         if file_ts_utc:
             row.append(fmt_inactive(u["last_activity_at"], file_ts_utc))
-        if show_indicators and tracks_avg is not None:
-            row.append(progress_icon(count, round(tracks_avg)))
         rows.append(row)
 
-    return f"## Summary\n\n{md_table(headers, rows)}\n"
+    heading = f"## Summary — {ts_label}" if ts_label else "## Summary"
+    return f"{heading}\n\n{md_table(headers, rows)}\n"
 
 
 def section_per_user(users: dict, show_email: bool = True) -> str:
@@ -340,14 +361,21 @@ def section_per_user(users: dict, show_email: bool = True) -> str:
     for u in sorted(users.values(), key=lambda x: x["name"].lower()):
         heading = (f"### {u['name']} ({u['email']})\n" if show_email
                    else f"### {u['name']}\n")
+        comp = completed_count(u)
+        started = started_count(u)
+        user_last_seen = utc_to_local(u["last_activity_at"])
+        totals = f"Completed/Started: **{comp}/{started}** — Last Seen: **{user_last_seen}**\n"
         rows = []
-        for slug in sorted(u["tracks"]):
+        for i, slug in enumerate(sorted(u["tracks"]), start=1):
             t = u["tracks"][slug]
             status = "✅ Completed" if t["completed"] else "⬜ In Progress"
             progress = f"{t['completed_challenges']} / {t['total_challenges']}"
-            rows.append([slug, status, progress])
+            track_last_seen = utc_to_local(t["last_activity_at"])
+            if t["last_activity_at"] == u["last_activity_at"]:
+                track_last_seen = f"**{track_last_seen}**"
+            rows.append([str(i), slug, status, progress, track_last_seen])
 
-        blocks.append(heading + "\n" + md_table(["Track", "Status", "Challenges"], rows))
+        blocks.append(heading + "\n" + totals + "\n" + md_table(["#", "Track", "Status", "Challenges", "Last Seen"], rows))
 
     return "## Per-User Track Detail\n\n" + "\n\n".join(blocks) + "\n"
 
@@ -370,6 +398,8 @@ def main():
                         help="Show 'Inactive For' column (relative to file modification time)")
     parser.add_argument("--progress-indicator", action="store_true",
                         help="Show 'Tracks — Indicators of Progression' section")
+    parser.add_argument("--trimmed-mean", action="store_true",
+                        help="Use trimmed mean (drop top/bottom 10%%) instead of median as reference")
     parser.add_argument("--no-tracks-summary", action="store_true",
                         help="Hide the Track Summary table")
     parser.add_argument("--no-summary-indicators", action="store_true",
@@ -385,7 +415,9 @@ def main():
     current_file_timestamp = datetime.fromtimestamp(
         args.input.stat().st_mtime, tz=timezone.utc)
     file_ts_local = current_file_timestamp.astimezone(LOCAL_TZ)
-    file_ts_label = file_ts_local.strftime("%Y-%m-%dT%H:%M:%S")
+    file_ts_date  = file_ts_local.strftime("%Y-%m-%d")
+    file_ts_time  = file_ts_local.strftime("%H:%M:%S")
+    file_ts_label = f"{file_ts_date} — {file_ts_time}"
 
     users = load(args.input, date_filter=args.date)
     if not users:
@@ -396,8 +428,15 @@ def main():
     show_email = not args.no_email
     file_ts_utc = current_file_timestamp if args.inactive else None
 
-    # Average completed tracks
-    tracks_avg = sum(completed_count(u) for u in users.values()) / len(users)
+    # Reference: median (default) or trimmed mean (--trimmed-mean)
+    counts = sorted(completed_count(u) for u in users.values())
+    if args.trimmed_mean:
+        k = max(1, len(counts) // 10)
+        tracks_avg = sum(counts[k:-k]) / len(counts[k:-k])
+        method_label = "Trimmed-mean"
+    else:
+        tracks_avg = statistics.median(counts)
+        method_label = "Median"
     show_indicators = not args.no_summary_indicators
 
     date_label = f" — {args.date}" if args.date else ""
@@ -408,7 +447,7 @@ def main():
     ]
 
     if args.progress_indicator:
-        parts.append(section_progress_indicator(users, tracks_avg, file_ts_utc))
+        parts.append(section_progress_indicator(users, tracks_avg, file_ts_utc, method_label))
 
     if not args.no_tracks_summary:
         parts.append(section_track_summary(users))
@@ -417,6 +456,7 @@ def main():
         users, show_email, file_ts_utc,
         tracks_avg=tracks_avg,
         show_indicators=show_indicators,
+        ts_label=f"{file_ts_label} {LOCAL_TZ_NAME}",
     ))
 
     if not args.summary_only:
